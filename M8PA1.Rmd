@@ -1,17 +1,18 @@
 ---
 title: "Predict the manner in which they exercise using data from devices"
 author: "Daniel Woo"
-output:
-  pdf_document: 
-  html_document: default
+output:  
+  html_document:
     keep_md: yes
 ---
 
 ## Environment setup
-```{r envsetup, echo=FALSE,message=FALSE}
+```{r envsetup, echo=FALSE,message=FALSE,results='hide'}
 library(caret)
 library(mlbench)
+library(parallel)
 ```
+
 ## Executive Summary
 Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). We are particularly interested in the following two questions:
 
@@ -34,101 +35,121 @@ if (!file.exists(testFile)) {
   download.file(testUrl, destfile=testFile)
 }
 
-trainData <- read.csv("./data/pml-training.csv")
-testData <- read.csv("./data/pml-testing.csv")
+trainData <- read.csv("./data/pml-training.csv",na.strings=c("NA",""))
+testData <- read.csv("./data/pml-testing.csv",,na.strings=c("NA",""))
 
 dim(trainData)
 dim(testData)
 ```
 
 ## Cleansing the dataset
-```{r cleandata, echo=TRUE, results='hide'}
 
-```
+Remove the columns that is simply an index, timestamp or username.
 
-## Slicing the dataset
-```{r slicingdata, echo=TRUE, results='hide'}
-set.seed(7)
-inTrain <- createDataPartition(y=trainData$classe, p=0.7, list=FALSE)
-training <- trainData[inTrain, ]
-testing <- trainData[-inTrain, ]
+```{r cleandatastep1, echo=TRUE, results='hide'}
+training<-trainData[,7:160]
+test<-testData[,7:160]
 
 dim(training)
-dim(testing)
-
-training_prePCA <- training[,sapply(training, is.numeric)]
-testing_prePCA <- testing[,sapply(testing, is.numeric)]
-
-dim(training_prePCA)
-dim(testing_prePCA)
+dim(test)
 ```
 
-## Preprocess the dataset
-```{r preprocessdata, echo=TRUE, results='hide'}
-training_preprocess <- preProcess(training_prePCA, method = "pca", thresh = 0.95)
+Remove the columns that are mostly NAs. 
 
-print(training_preprocess)
-
-training_PCA <- predict(training_preprocess, training_prePCA)
-testing_PCA <- predict(training_preprocess, testing_prePCA)
-
-dim(training_PCA)
-dim(testing_PCA)
-
-training <- cbind(training_PCA[,1:40], classe = training$classe)
-testing <- cbind(testing_PCA[,1:40], classe = testing$classe)
-
-dim(training)
-dim(testing)
+```{r cleandatastep2, echo=TRUE, results='hide'}
+mostly_data<-apply(!is.na(training),2,sum)>19621
+training<-training[,mostly_data]
+test<-test[,mostly_data]
 ```
+
+## Partition the training dataset
+
+Partitioned the training set. The training data is splitted into two sets, 70% for training and 30% for cross-validation
+
+```{r partitiondata, echo=TRUE, results='hide'}
+inTrain <- createDataPartition(y=training$classe, p=0.7, list=FALSE)
+training1 <- training[inTrain, ]
+testing <- training[-inTrain, ]
+```
+
+The model is automatically tuned and is evaluated using 5-folds cross validation.
 
 ## Prepare training scheme
 ```{r preparetraindata, echo=TRUE, results='hide'}
-control <- trainControl(method="repeatedcv", number=10, repeats=3)
+control <- trainControl(allowParallel = TRUE, method="cv", number=5)
 ```
 
-Each model is automatically tuned and is evaluated using 3 repeats of 10-folds cross validation.
-
 ## Models
-The three models constructed and tuned are Stochastic Gradient Boosting (also known as Gradient Boosted Machine or GBM), Random Forest (RF) and Recursive Partitioning (RPART).
+
+The three models that are constructed and tuned are Stochastic Gradient Boosting (also known as Gradient Boosted Machine or GBM), Random Forest (RF) and Recursive Partitioning (RPART).
+
+The random number seed is set before each algorithm is trained to ensure that each algorithm get the same data partitions. This will allow valid comparison in the final results.
 
 ## Train the GBM model
 
 ```{r gbmModel, echo=TRUE, results='hide', message=FALSE}
 set.seed(7)
-modGbm<-train(classe ~ ., method="gbm",data=training,verbose=FALSE)
+modGbm<-train(classe ~ ., method="gbm",data=training1,verbose=FALSE, trControl=control)
 ```
 
-## Train the RF model
+## Train the KNN model
 
-```{r rfModel, echo=TRUE, results='hide', message=FALSE}
+```{r knnModel, echo=TRUE, results='hide', message=FALSE}
 set.seed(7)
-modRF<-train(classe ~ .,data=training,method="rf",prox=TRUE)
+modKNN<-train(classe ~ .,data=training1,method="knn", trControl=control)
 ```
 
 ## Train the RPART model
 
 ```{r rpartModel, echo=TRUE, results='hide', message=FALSE}
 set.seed(7)
-modRpart <- train(classe ~ .,method="rpart",data=training)
+modRpart <- train(classe ~ .,method="rpart",data=training1, trControl=control)
 ```
 
+Each model has 5 results (5-fold cros validation). The 5 results are compared between the models by accuracy distributions. 
+
 ## Collect the resamples
-results <- resamples(list(GBM=modGbm, RF=modRF, RPART=modRpart))
 
+```{r collectresamples, echo=TRUE, results='hide', message=FALSE}
+results <- resamples(list(GBM=modGbm, KNN=modKNN, RPART=modRpart))
+```
+
+The distributions are summarized in terms of percentiles.
 ## Summarize the distributions
+
+```{r summaryresamples, echo=TRUE, message=FALSE}
 summary(results)
+```
 
-## Predicting for test data sets
-qplot(predict(modGbm,testing),trainData,data=testing)
-qplot(predict(modRF,testing),trainData,data=testing)
-qplot(predict(modRpart,testing),trainData,data=testing)
+## Select the most accurate Model
 
+GDM model is selected as it produces the highest accuracy.
+
+## Predicting for Test Data Set
+
+The GDM model is applied to the validation data set and we measure the performance
+
+```{r predicttestdataset, echo=TRUE, message=FALSE}
+pred <- predict(modGbm, testing)
+confusionMatrix(pred, testing$classe)
+```
+
+## Predicting for the Test Data Set
+
+The GDM model is applied to the testing data set downloaded.
+
+```{r submitresults, echo=TRUE, results ='hide', message=FALSE}
+submitResults <- predict(modGbm, test)
+```
 
 ## Appendix: Figures
 
 ### boxplots of results
+```{r bwplotresults, echo=TRUE, message=FALSE}
 bwplot(results)
+```
 
 ### dot plots of results
+```{r dotplotresults, echo=TRUE, message=FALSE}
 dotplot(results)
+```
